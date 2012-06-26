@@ -669,7 +669,18 @@ scan_c_file (char *filename, const char *mode)
   int extension = filename[strlen (filename) - 1];
 
   if (extension == 'o')
-    filename[strlen (filename) - 1] = 'c';
+    {
+      /* Try llvm.o specially, since it's the only C++ file. */
+      if (strcmp (filename, "llvm.o") == 0)
+        {
+          filename = strdup("llvm.cpp"); /* this leak is harmless */
+          extension = 'p';
+        }
+      else
+        {
+          filename[strlen (filename) - 1] = 'c';
+        }
+    }
 
   infile = fopen (filename, mode);
 
