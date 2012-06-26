@@ -482,6 +482,7 @@ exec_byte_code (Lisp_Object bytestr, Lisp_Object vector, Lisp_Object maxdepth,
       typedef Lisp_Object (*Native_Function)(int /* argc */,
                                              Lisp_Object * /* args */);
       Native_Function func = (Native_Function) XINT (bytestr);
+      write_string ("Executing Native LLVM function...\n", -1);
       return func(nargs, args);
     }
 

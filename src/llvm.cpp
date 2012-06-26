@@ -68,14 +68,22 @@ namespace lc
   struct UChar {
     typedef unsigned char value_type;
     typedef ConstantInt llvm_constant_type;
-    Type *operator()() {
+    operator Type *() const {
       return Type::getInt8Ty(*Context);
+    }
+  };
+
+  struct PtrDiffT {
+    typedef ptrdiff_t value_type;
+    typedef ConstantInt llvm_constant_type;
+    operator Type *() const {
+      return Type::getInt64Ty(*Context);
     }
   };
 
   struct Double {
     typedef double value_type;
-    Type *operator()() {
+    operator Type *() const {
       return Type::getDoubleTy(*Context);
     }
   };
@@ -85,8 +93,23 @@ namespace lc
     operator Type *() const {
       return Type::getInt64Ty(*Context);
     }
-    Type *operator()() {
-      return *this;
+  };
+
+  template <typename BaseType>
+  struct Pointer {
+    typedef typename BaseType::value_type * value_type;
+    operator Type *() const {
+      return PointerType::getUnqual(BaseType());
+    }
+  };
+
+  template <typename BaseType>
+  struct Array {
+    typedef typename BaseType::value_type * value_type;
+    unsigned int size;
+    Array(unsigned int sz) : size(sz) {}
+    operator Type *() const {
+      return ArrayType::get(BaseType(), size);
     }
   };
 
@@ -114,10 +137,10 @@ namespace lc
     }
 
     Node operator==(const Node& rhs) const {
-      return Builder->CreateICmpEQ(*this, const_cast<Node&>(rhs), "tmp");
+      return Builder->CreateICmpEQ(*this, const_cast<Node&>(rhs));
     }
     Node operator>>(uint64_t size) const {
-      return Builder->CreateLShr(value, size, "tmp");
+      return Builder->CreateLShr(value, size);
     }
   };
 
@@ -127,11 +150,12 @@ namespace lc
     typename T::value_type constant;
     Constant(typename T::value_type c) : constant(c) {}
 
-    operator Node() {
-      return Node(
-        T::llvm_constant_type::get (
-          T()(), constant,
-          /* isSigned= */ is_signed<typename T::value_type>::value));
+    operator Value *() const {
+      return T::llvm_constant_type::get(
+        T(), constant, is_signed<typename T::value_type>::value);
+    }
+    operator Node() const {
+      return Node((Value *)*this);
     }
   };
 
@@ -186,38 +210,70 @@ namespace lc
       TheFunction->getBasicBlockList().push_back(ifend);
       Builder->SetInsertPoint(ifend);
 
-      PHINode *PN = Builder->CreatePHI(ReturnType()(), 2, "iftmp");
+      PHINode *PN = Builder->CreatePHI(ReturnType(), 2, "iftmp");
       PN->addIncoming(then_body, then_block);
       PN->addIncoming(else_body, else_block);
       return PN;
     }
   };
 
+  Function * Func(const char *Name, Type * ret_type, vector<Type *>& types)
+  {
+    Function *Callee = TheModule->getFunction(Name);
+    if (! Callee) {
+      FunctionType *FT =
+        FunctionType::get(/* Result=   */ ret_type,
+                          /* Params=   */ types,
+                          /* isVarArg= */ false);
+
+      Callee = Function::Create(
+        FT, Function::ExternalLinkage, Name, TheModule);
+      Callee->setCallingConv(CallingConv::C);
+    }
+    return Callee;
+  }
+
+  template <typename ParamType, typename ...ParamTypes>
+  Function * Func(
+    const char *Name, Type * ret_type, vector<Type *>& types, ParamType param,
+    ParamTypes ...params)
+  {
+    types.push_back(param);
+    return Func(Name, ret_type, types, params...);
+  }
+
+  template <typename ...ParamTypes>
+  Function * Func(const char *Name, Type * ret_type, ParamTypes ...params)
+  {
+    vector<Type *> types;
+    return Func(Name, ret_type, types, params...);
+  }
+
   template <typename ReturnType = LispObject>
   Node Call(const char *Name, vector<Node>& nodes)
   {
     // Look up the name in the global module table.
     Function *Callee = TheModule->getFunction(Name);
-    if (Callee == 0) {
+    if (! Callee) {
       vector<Type *> types;
-      for_each(
-        nodes.begin(), nodes.end(),
-        [&](Node& node) { types.push_back(node.getValue()->getType()); });
+      for_each(nodes.begin(), nodes.end(), [&](Node& node) {
+          types.push_back(node.getValue()->getType());
+        });
 
       FunctionType *FT =
-        FunctionType::get (/* Result=   */ ReturnType()(),
-                           /* Params=   */ types,
-                           /* isVarArg= */ false);
+        FunctionType::get(/* Result=   */ ReturnType(),
+                          /* Params=   */ types,
+                          /* isVarArg= */ false);
 
-      Callee = Function::Create (
+      Callee = Function::Create(
         FT, Function::ExternalLinkage, Name, TheModule);
       Callee->setCallingConv(CallingConv::C);
     }
 
     vector<Value *> values;
-    for_each(
-      nodes.begin(), nodes.end(),
-      [&](Node& node) { values.push_back(node.getValue()); });
+    for_each(nodes.begin(), nodes.end(), [&](Node& node) {
+        values.push_back(node.getValue());
+      });
 
     return Builder->CreateCall(Callee, values, Name);
   }
@@ -240,15 +296,45 @@ namespace lc
 }
 
 using namespace lc;
+
+/* Fetch the next byte from the bytecode stream */
 
+#undef FETCH
+#define FETCH *stream_pc++
+
+/* Push x onto the execution stack.  This used to be #define PUSH(x)
+   (*++stackp = (x)) This oddity is necessary because Alliant can't be
+   bothered to compile the preincrement operator properly, as of 4/91.
+   -JimB */
+
+#undef PUSH
+#define PUSH(x) values.push_back(x)
+
+/* Pop a value off the execution stack.  */
+
+#undef POP
+#define POP values.pop_back()
+
+/* Discard n values from the execution stack.  */
+
+#undef DISCARD
+#define DISCARD(n) values.clear(values.end() - n, values.end())
+
+/* Get the value which is at the top of the execution stack, but don't
+   pop it. */
+
+#undef TOP
+#define TOP (values.back())
+
 Value *CompileByteCode (Lisp_Object bytestr, Lisp_Object constants,
                         ptrdiff_t nargs, Lisp_Object *args)
 {
   int count = SPECPDL_INDEX ();
   int op;
   Lisp_Object *constantsp;
+  struct byte_stack stack;
   Lisp_Object *top;
-  Lisp_Object result;
+  Node result;
   unsigned char *stream = SDATA (bytestr);
   unsigned char *stream_pc = stream;
 
@@ -269,7 +355,8 @@ Value *CompileByteCode (Lisp_Object bytestr, Lisp_Object constants,
 
   while (1)
   {
-    //op = FETCH;
+    op = FETCH;
+    printf("processing op: %o\n", op);
 
     switch (op)
     {
@@ -475,9 +562,26 @@ Value *CompileByteCode (Lisp_Object bytestr, Lisp_Object constants,
     case Bcall+4:
     case Bcall+5:
       op -= Bcall;
-    docall:
-        values.front() = Call<LispObject>("funcall", values);
+    docall: {
+        // BEFORE_POTENTIAL_GC ();
+        // DISCARD (op);
+        // TOP = Ffuncall (op + 1, &TOP);
+        // AFTER_POTENTIAL_GC ();
+
+        size_t len = values.size();
+        Value * args = Builder->CreateAlloca(
+          LispObject(), Constant<UChar>(values.size()));
+        for (int i = 0; i < len; ++i) {
+          Value * GEP = Builder->CreateGEP(args, Constant<UChar>(i));
+          Builder->CreateStore(values[i], GEP);
+        }
+
+        result = Call<LispObject>("funcall", values.size(), args);
+
+        values.clear();
+        values.push_back(result);
         break;
+      }
 
 #if 0
     case Bunbind+6:
@@ -603,11 +707,14 @@ Value *CompileByteCode (Lisp_Object bytestr, Lisp_Object constants,
       }
       else DISCARD (1);
       break;
+#endif
 
     case Breturn:
-      result = POP;
+      //result = POP;
+      result = TOP;
       goto exit;
 
+#if 0
     case Bdiscard:
       DISCARD (1);
       break;
@@ -1349,7 +1456,7 @@ Value *CompileByteCode (Lisp_Object bytestr, Lisp_Object constants,
   if (SPECPDL_INDEX () != count)
     abort ();
 
-  return NULL /*result*/;
+  return result;
 }
 
 Function *CompileFunction (Lisp_Object bytestr, Lisp_Object constants,
@@ -1359,7 +1466,7 @@ Function *CompileFunction (Lisp_Object bytestr, Lisp_Object constants,
   BasicBlock *BB = BasicBlock::Create(*Context, "entry", TheFunction);
   Builder->SetInsertPoint(BB);
 
-  if (Value *RetVal = CompileByteCode(bytestr, constants, nargs, args))
+  if (Value * RetVal = CompileByteCode(bytestr, constants, nargs, args))
     {
       // Finish off the function.
       Builder->CreateRet(RetVal);
@@ -1369,8 +1476,11 @@ Function *CompileFunction (Lisp_Object bytestr, Lisp_Object constants,
       verifyFunction(*TheFunction);
 #endif
 
+#if 0
+      // jww (2012-06-26): Optimization pass crashes right now
       // Optimize the function.
       TheFPM->run(*TheFunction);
+#endif
 
       return TheFunction;
     }
@@ -1454,8 +1564,12 @@ llvm_compile_byte_code (Lisp_Object bytestr, Lisp_Object constants,
       // about how the target lays out data structures.
       OurFPM.add(new TargetData(*TheExecutionEngine->getTargetData()));
       printf("step 8..\n");
+
       // Provide basic AliasAnalysis support for GVN.
       OurFPM.add(createBasicAliasAnalysisPass());
+      printf("step 9..\n");
+      // Do simple "peephole" optimizations and bit-twiddling optzns.
+      OurFPM.add(createPromoteMemoryToRegisterPass());
       printf("step 9..\n");
       // Do simple "peephole" optimizations and bit-twiddling optzns.
       OurFPM.add(createInstructionCombiningPass());
@@ -1478,13 +1592,16 @@ llvm_compile_byte_code (Lisp_Object bytestr, Lisp_Object constants,
       printf("step 15..\n");
 
       /* Create mappings for all of the Emacs Lisp builtins. */
+      TheExecutionEngine->addGlobalMapping(
+        Func("funcall", /* ReturnType= */ LispObject(),
+             /* ParamTypes= */ PtrDiffT(), Pointer<LispObject>()),
+        (void *) &Ffuncall);
+      printf("step 16..\n");
+
 #define MAP_TO_LLVM(name, nargs)                \
       TheExecutionEngine->addGlobalMapping(     \
         CreateFunction(#name, nargs),           \
         (void *) &F ## name);
-
-      printf("step 16..\n");
-      MAP_TO_LLVM(funcall, 1);  // &rest ARGS
 
       printf("step 17..\n");
       MAP_TO_LLVM(setcar, 2);
