@@ -1540,39 +1540,35 @@ llvm_compile_byte_code (Lisp_Object bytestr, Lisp_Object constants,
       TheExecutionEngine = EngineBuilder(TheModule).create();
       //printf("step 6..\n");
 
-      FunctionPassManager OurFPM(TheModule);
+      TheFPM = new FunctionPassManager(TheModule);
       //printf("step 7..\n");
 
       // Set up the optimizer pipeline.  Start with registering info
       // about how the target lays out data structures.
-      OurFPM.add(new TargetData(*TheExecutionEngine->getTargetData()));
+      TheFPM->add(new TargetData(*TheExecutionEngine->getTargetData()));
       //printf("step 8..\n");
 
-      // Provide basic AliasAnalysis support for GVN.
-      OurFPM.add(createBasicAliasAnalysisPass());
-      //printf("step 9..\n");
-      // Do simple "peephole" optimizations and bit-twiddling optzns.
-      OurFPM.add(createPromoteMemoryToRegisterPass());
-      //printf("step 9..\n");
-      // Do simple "peephole" optimizations and bit-twiddling optzns.
-      OurFPM.add(createInstructionCombiningPass());
-      //printf("step 10..\n");
-      // Reassociate expressions.
-      OurFPM.add(createReassociatePass());
-      //printf("step 11..\n");
-      // Eliminate Common SubExpressions.
-      OurFPM.add(createGVNPass());
-      //printf("step 12..\n");
-      // Simplify the control flow graph (deleting unreachable blocks, etc).
-      OurFPM.add(createCFGSimplificationPass());
-      //printf("step 13..\n");
+      TheFPM->add(createVerifierPass());
 
-      OurFPM.doInitialization();
+      TheFPM->add(createTypeBasedAliasAnalysisPass());
+      TheFPM->add(createBasicAliasAnalysisPass());
+
+      TheFPM->add(createCFGSimplificationPass());
+      TheFPM->add(createScalarReplAggregatesPass());
+      TheFPM->add(createEarlyCSEPass());
+      TheFPM->add(createLowerExpectIntrinsicPass());
+
+#if 0
+      /* jww (2012-06-26): Additional optimization passes, which Clang
+         does not currently use for FunctionPass optimization. */
+      TheFPM->add(createPromoteMemoryToRegisterPass());
+      TheFPM->add(createInstructionCombiningPass());
+      TheFPM->add(createReassociatePass());
+      TheFPM->add(createGVNPass());
+#endif
+
+      TheFPM->doInitialization();
       //printf("step 14..\n");
-
-      // Set the global so the code gen can use this.
-      TheFPM = &OurFPM;
-      //printf("step 15..\n");
 
       /* Create mappings for all of the Emacs Lisp builtins. */
       TheExecutionEngine->addGlobalMapping(
