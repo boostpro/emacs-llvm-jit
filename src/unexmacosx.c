@@ -848,6 +848,8 @@ copy_data_segment (struct load_command *lc)
 	       || strncmp (sectp->sectname, "__cfstring", 16) == 0
 	       || strncmp (sectp->sectname, "__gcc_except_tab", 16) == 0
 	       || strncmp (sectp->sectname, "__program_vars", 16) == 0
+	       || strncmp (sectp->sectname, "__mod_init_func", 16) == 0
+	       || strncmp (sectp->sectname, "__mod_term_func", 16) == 0
 	       || strncmp (sectp->sectname, "__objc_", 7) == 0)
 	{
 	  if (!unexec_copy (sectp->offset, old_file_offset, sectp->size))
@@ -856,7 +858,8 @@ copy_data_segment (struct load_command *lc)
 	    unexec_error ("cannot write section %s's header", sectp->sectname);
 	}
       else
-	unexec_error ("unrecognized section name in __DATA segment");
+	unexec_error ("unrecognized section name in __DATA segment: %s",
+                      sectp->sectname);
 
       printf ("        section %-16.16s at %#8lx - %#8lx (sz: %#8lx)\n",
 	      sectp->sectname, (long) (sectp->offset),

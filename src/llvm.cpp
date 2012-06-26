@@ -87,17 +87,63 @@ namespace lc
     }
   };
 
+  struct Node
+  {
+    Value *value;
+    Node() : value(NULL) {}
+    Node(Lisp_Object t) : value(ConstantInt::get(LispObject()(), t, false)) {}
+    Node(Value *v) : value(v) {}
+
+    Node& operator=(const Node& rhs) {
+      value = rhs.value;
+      return *this;
+    }
+    Node& operator=(Value *val) {
+      value = val;
+      return *this;
+    }
+
+    operator Value *() const {
+      return getValue();
+    }
+    Value * getValue() const {
+      return value;
+    }
+
+    Node operator==(const Node& rhs) const {
+      return Builder->CreateICmpEQ(*this, const_cast<Node&>(rhs), "tmp");
+    }
+    Node operator>>(uint64_t size) const {
+      return Builder->CreateLShr(value, size, "tmp");
+    }
+  };
+
   template <typename T>
+  struct Constant
+  {
+    typename T::value_type constant;
+    Constant(typename T::value_type c) : constant(c) {}
+
+    operator Node() {
+      return Node(
+        T::llvm_constant_type::get (
+          T()(), constant,
+          /* isSigned= */ is_signed<typename T::value_type>::value));
+    }
+  };
+
+  template <typename ReturnType = LispObject>
   struct If
   {
     BasicBlock * then_block;
     BasicBlock * else_block;
     BasicBlock * ifend;
-    Value *      condbr;
-    Value *      then_body;
-    Value *      else_body;
 
-    If(Value *cond, bool has_else = false) : condbr(NULL) {
+    Node condbr;
+    Node then_body;
+    Node else_body;
+
+    If(Node cond, bool has_else = false) : condbr(NULL) {
       then_block = BasicBlock::Create(*Context, "then", TheFunction);
       else_block = has_else ? BasicBlock::Create(*Context, "else") : NULL;
       ifend      = BasicBlock::Create(*Context, "ifend");
@@ -106,7 +152,7 @@ namespace lc
         cond, then_block, else_block ? else_block : ifend);
     }
 
-    If& Then(function<Value *()> f) {
+    If& Then(function<Node()> f) {
       Builder->SetInsertPoint(then_block);
 
       then_body = f();
@@ -119,7 +165,7 @@ namespace lc
       return *this;
     }
 
-    If& Else(function<Value *()> f) {
+    If& Else(function<Node()> f) {
       TheFunction->getBasicBlockList().push_back(else_block);
       Builder->SetInsertPoint(else_block);
 
@@ -133,63 +179,27 @@ namespace lc
       return *this;
     }
 
-    Value *End() {
+    Node End() {
       TheFunction->getBasicBlockList().push_back(ifend);
       Builder->SetInsertPoint(ifend);
 
-      PHINode *PN = Builder->CreatePHI(T()(), 2, "iftmp");
+      PHINode *PN = Builder->CreatePHI(ReturnType()(), 2, "iftmp");
       PN->addIncoming(then_body, then_block);
       PN->addIncoming(else_body, else_block);
       return PN;
     }
   };
 
-  struct Node
+  template <typename ReturnType = LispObject>
+  Node Call(const char *Name, vector<Node>& nodes)
   {
-    Value *value;
-    Node(Value *v) : value(v) {}
-
-    operator Value *() {
-      return getValue();
-    }
-    Value * getValue() {
-      return value;
-    }
-
-    Node operator==(const Node& rhs) {
-      return Builder->CreateICmpEQ(*this, const_cast<Node&>(rhs), "tmp");
-    }
-    Node operator>>(uint64_t size) {
-      return Builder->CreateAShr(value, size, "tmp");
-    }
-  };
-
-  template <typename T>
-  struct Constant
-  {
-    typename T::value_type constant;
-    Constant(typename T::value_type c) : constant(c) {}
-
-    operator Value *() {
-      return typename T::llvm_constant_type::get (
-        T()(), constant,
-        /* isSigned= */ is_signed<typename T::value_type>::value);
-    }
-  };
-
-  struct Obj : Constant<LispObject> {
-    Obj(Lisp_Object obj) : Constant<LispObject>(obj) {}
-  };
-
-  template <typename ReturnType>
-  Node Call(vector<Node>& nodes, const char *Name) {
     // Look up the name in the global module table.
     Function *Callee = TheModule->getFunction(Name);
     if (Callee == 0) {
       vector<Type *> types;
       for_each(
         nodes.begin(), nodes.end(),
-        [](Node& node) { types.push_back(node.getValue()->getType()); });
+        [&](Node& node) { types.push_back(node.getValue()->getType()); });
 
       FunctionType *FT =
         FunctionType::get (/* Result=   */ ReturnType()(),
@@ -204,28 +214,31 @@ namespace lc
     vector<Value *> values;
     for_each(
       nodes.begin(), nodes.end(),
-      [](Node& node) { values.push_back(node.getValue()); });
+      [&](Node& node) { values.push_back(node.getValue()); });
 
     return Builder->CreateCall(Callee, values, Name);
   }
 
-  template <typename ReturnType, typename ArgType, typename ...ArgTypes>
+  template <typename ReturnType = LispObject,
+            typename ArgType, typename ...ArgTypes>
   Node Call(
-    vector<Node>& nodes, const char *Name, ArgType arg, ArgTypes ...args) {
+    const char *Name, vector<Node>& nodes, ArgType arg, ArgTypes ...args)
+  {
     nodes.push_back(arg);
-    return Call(nodes, Name, args...);
+    return Call<ReturnType>(Name, nodes, args...);
   }
 
-  template <typename ReturnType, typename ...ArgTypes>
-  Node Call(const char *Name, ArgTypes ...args) {
+  template <typename ReturnType = LispObject, typename ...ArgTypes>
+  Node Call(const char *Name, ArgTypes ...args)
+  {
     vector<Node> nodes;
-    return Call(nodes, args...);
+    return Call<ReturnType>(Name, nodes, args...);
   }
 }
 
 using namespace lc;
 
-Value *CompileByteCode (Function *F, Lisp_Object bytestr, Lisp_Object constants,
+Value *CompileByteCode (Lisp_Object bytestr, Lisp_Object constants,
                         ptrdiff_t nargs, Lisp_Object *args)
 {
   int count = SPECPDL_INDEX ();
@@ -251,13 +264,15 @@ Value *CompileByteCode (Function *F, Lisp_Object bytestr, Lisp_Object constants,
 
   vector<Node> values;
 
-#if 0
   while (1)
   {
+#if 0
     op = FETCH;
+#endif
 
     switch (op)
     {
+#if 0
     case Bvarref + 7:
       op = FETCH2;
       goto varref;
@@ -310,6 +325,7 @@ Value *CompileByteCode (Function *F, Lisp_Object bytestr, Lisp_Object constants,
       }
       break;
     }
+#endif
 
     case Bcar:
       // {
@@ -329,27 +345,28 @@ Value *CompileByteCode (Function *F, Lisp_Object bytestr, Lisp_Object constants,
       // }
     {
       values.front() =
-        If<LispObject>((values.front() >> VALBITS) ==
-                       Constant<UChar>(Lisp_Cons),
-                       /* has_else= */ true)
-        .Then ([]() {
+        If<>((values.front() >> VALBITS) == Constant<UChar>(Lisp_Cons),
+           /* has_else= */ true)
+        .Then ([&]() {
+            return (values.front() /* = XCAR (v1) */);
           })
-        .Else ([]() {
-            If<LispObject>(values.front() == Obj(Qnil)),
-            /* has_else= */ true)
+        .Else ([&]() {
+            return
+            If<>(values.front() == Qnil, /* has_else= */ true)
             .Then ([]() {
-                return Obj(Qnil);
+                return Qnil;
               })
-            .Else ([]() {
-                return Call("wrong_type_argument", Obj(Qlistp),
-                            values.front());
+            .Else ([&]() {
+                return Call<LispObject>(
+                  "wrong_type_argument", Node(Qlistp), values.front());
               })
-            .End ()
+            .End ();
           })
-        .End ()
+        .End ();
       break;
     }
 
+#if 0
     case Beq:
     {
       Lisp_Object v1;
@@ -455,6 +472,7 @@ Value *CompileByteCode (Function *F, Lisp_Object bytestr, Lisp_Object constants,
     case Bcall+7:
       op = FETCH2;
       goto docall;
+#endif
 
     case Bcall:
     case Bcall+1:
@@ -464,12 +482,10 @@ Value *CompileByteCode (Function *F, Lisp_Object bytestr, Lisp_Object constants,
     case Bcall+5:
       op -= Bcall;
     docall:
-      {
-        DISCARD (op);
-        TOP = Ffuncall (op + 1, &TOP);
+        values.front() = Call<LispObject>("funcall", values);
         break;
-      }
 
+#if 0
     case Bunbind+6:
       op = FETCH;
       goto dounbind;
@@ -1325,13 +1341,13 @@ Value *CompileByteCode (Function *F, Lisp_Object bytestr, Lisp_Object constants,
       }
       DISCARD (op);
       break;
+#endif
 
     case 255:
     default:
-      PUSH (constantsp[op - Bconstant]);
+      values.push_back(constantsp[op - Bconstant]);
     }
   }
-#endif
 
  exit:
 
@@ -1342,60 +1358,58 @@ Value *CompileByteCode (Function *F, Lisp_Object bytestr, Lisp_Object constants,
   return NULL /*result*/;
 }
 
-Function *CompileFunction (Function *F, Lisp_Object bytestr,
-                           Lisp_Object constants,
+Function *CompileFunction (Lisp_Object bytestr, Lisp_Object constants,
                            ptrdiff_t nargs, Lisp_Object *args)
 {
   // Create a new basic block to start insertion into.
-  BasicBlock *BB = BasicBlock::Create(*Context, "entry", F);
+  BasicBlock *BB = BasicBlock::Create(*Context, "entry", TheFunction);
   Builder->SetInsertPoint(BB);
 
-  if (Value *RetVal = CompileByteCode(F, bytestr, constants, nargs, args))
+  if (Value *RetVal = CompileByteCode(bytestr, constants, nargs, args))
     {
       // Finish off the function.
       Builder->CreateRet(RetVal);
 
-      // Validate the generated code, checking for consistency.
-      verifyFunction(*F);
+#if 0
+    // Validate the generated code, checking for consistency.
+      verifyFunction(*TheFunction);
+#endif
 
       // Optimize the function.
-      TheFPM->run(*F);
+      TheFPM->run(*TheFunction);
 
-      return F;
+      return TheFunction;
     }
 
   // Error reading body, remove function.
-  F->eraseFromParent();
+  TheFunction->eraseFromParent();
   return 0;
 }
 
 Function *CreateFunction (const char *name, ptrdiff_t nargs, void *id = NULL)
 {
-  Type ** LispTypes = new Type *[nargs + 1];
+  vector<Type *> types;
   for (int i = 0; i < nargs; ++i)
-    LispTypes[i] = Type::getInt64Ty (*Context);
-  LispTypes[nargs] = NULL;
+    types.push_back(LispObject()());
+  types.push_back(NULL);
 
-  FunctionType *FT =
-    /* jww (2012-06-25): Use getInt32Ty when appropriate */
-    FunctionType::get (/* Result=   */ Type::getInt64Ty (*Context),
-                       /* Params=   */ ArrayRef<Type *>(LispTypes, nargs),
-                       /* isVarArg= */ false);
-  delete[] LispTypes;
+  FunctionType *FT = FunctionType::get (/* Result=   */ LispObject()(),
+                                        /* Params=   */ types,
+                                        /* isVarArg= */ false);
 
   static char Name[32];
   if (!name)
     sprintf (Name, "__emacs_%p", id);
 
-  Function *F = Function::Create (FT, Function::ExternalLinkage,
+  TheFunction = Function::Create (FT, Function::ExternalLinkage,
                                   name ? name : Name, TheModule);
-  F->setCallingConv(CallingConv::C);
+  TheFunction->setCallingConv(CallingConv::C);
 
   if (!name)
   {
     // Set names for all arguments.
     unsigned idx = 0;
-    for (Function::arg_iterator AI = F->arg_begin(); idx != nargs;
+    for (Function::arg_iterator AI = TheFunction->arg_begin(); idx != nargs;
          ++AI, ++idx)
       {
         sprintf (Name, "__arg%d", idx);
@@ -1403,7 +1417,7 @@ Function *CreateFunction (const char *name, ptrdiff_t nargs, void *id = NULL)
       }
   }
 
-  return F;
+  return TheFunction;
 }
 
 extern "C" {
@@ -1485,14 +1499,17 @@ llvm_compile_byte_code (Lisp_Object bytestr, Lisp_Object constants,
       MAP_TO_LLVM(setcar, 2);
     }
 
-  return CompileFunction(CreateFunction(NULL, nargs, (void *) &bytestr),
-                         bytestr, constants, nargs, args);
+  TheFunction = CreateFunction(NULL, nargs, (void *) &bytestr);
+  TheFunction = CompileFunction(bytestr, constants, nargs, args);
+  TheFunction->dump();
+
+  return TheExecutionEngine->getPointerToFunction(TheFunction);
 }
 
 Lisp_Object Qllvm_jit_compile;
 
 void
-syms_of_lllvm (void)
+syms_of_llvm (void)
 {
   DEFVAR_BOOL ("llvm-jit-compile", llvm_jit_compile,
 	       doc: /* If non-nil, compile byte-code functions with the LLVM JIT. */);
