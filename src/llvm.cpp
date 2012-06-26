@@ -1476,11 +1476,8 @@ Function *CompileFunction (Lisp_Object bytestr, Lisp_Object constants,
       verifyFunction(*TheFunction);
 #endif
 
-#if 0
-      // jww (2012-06-26): Optimization pass crashes right now
       // Optimize the function.
       TheFPM->run(*TheFunction);
-#endif
 
       return TheFunction;
     }
@@ -1492,45 +1489,31 @@ Function *CompileFunction (Lisp_Object bytestr, Lisp_Object constants,
 
 Function *CreateFunction (const char *name, ptrdiff_t nargs, void *id = NULL)
 {
-  printf("CF: step 1..\n");
   std::vector<Type*> types(nargs, LispObject());
-  printf("CF: step 3..\n");
   FunctionType *FT = FunctionType::get (/* Result=   */ LispObject(),
                                         /* Params=   */ types,
                                         /* isVarArg= */ false);
-
-  printf("CF: step 4..\n");
   static char Name[32];
-  printf("CF: step 5..\n");
   if (!name)
     sprintf (Name, "__emacs_%p", id);
 
-  printf("CF: step 6..\n");
   Function * F = Function::Create (FT, Function::ExternalLinkage,
                                    name ? name : Name, TheModule);
-  printf("CF: step 7..\n");
   F->setCallingConv(CallingConv::C);
 
-  printf("CF: step 8..\n");
   if (!name)
   {
-  printf("CF: step 9..\n");
     // Set names for all arguments.
     unsigned idx = 0;
-  printf("CF: step 10..\n");
     for (Function::arg_iterator AI = F->arg_begin();
          idx != nargs;
          ++AI, ++idx)
       {
-  printf("CF: step 11..\n");
         sprintf (Name, "__arg%d", idx);
-  printf("CF: step 12..\n");
         AI->setName(Name);
-  printf("CF: step 13..\n");
       }
   }
 
-  printf("CF: step 14..\n");
   return F;
 }
 
@@ -1540,82 +1523,82 @@ void *
 llvm_compile_byte_code (Lisp_Object bytestr, Lisp_Object constants,
                         ptrdiff_t nargs, Lisp_Object *args)
 {
-  printf("step 0..\n");
+  //printf("step 0..\n");
   if (! TheModule)
     {
-      printf("step 1..\n");
+      //printf("step 1..\n");
       InitializeNativeTarget();
-      printf("step 2..\n");
+      //printf("step 2..\n");
       Context = &getGlobalContext();
-      printf("step 3..\n");
-      TheModule = new Module("Emacs-LLVM-JIT", *Context);
-      printf("step 4..\n");
+      //printf("step 3..\n");
+      TheModule = new Module("llvm-jit-compile", *Context);
+      //printf("step 4..\n");
       Builder = new IRBuilder<>(*Context);
-      printf("step 5..\n");
+      //printf("step 5..\n");
 
       // Create the JIT.  This takes ownership of the module.
       TheExecutionEngine = EngineBuilder(TheModule).create();
-      printf("step 6..\n");
+      //printf("step 6..\n");
 
       FunctionPassManager OurFPM(TheModule);
-      printf("step 7..\n");
+      //printf("step 7..\n");
 
       // Set up the optimizer pipeline.  Start with registering info
       // about how the target lays out data structures.
       OurFPM.add(new TargetData(*TheExecutionEngine->getTargetData()));
-      printf("step 8..\n");
+      //printf("step 8..\n");
 
       // Provide basic AliasAnalysis support for GVN.
       OurFPM.add(createBasicAliasAnalysisPass());
-      printf("step 9..\n");
+      //printf("step 9..\n");
       // Do simple "peephole" optimizations and bit-twiddling optzns.
       OurFPM.add(createPromoteMemoryToRegisterPass());
-      printf("step 9..\n");
+      //printf("step 9..\n");
       // Do simple "peephole" optimizations and bit-twiddling optzns.
       OurFPM.add(createInstructionCombiningPass());
-      printf("step 10..\n");
+      //printf("step 10..\n");
       // Reassociate expressions.
       OurFPM.add(createReassociatePass());
-      printf("step 11..\n");
+      //printf("step 11..\n");
       // Eliminate Common SubExpressions.
       OurFPM.add(createGVNPass());
-      printf("step 12..\n");
+      //printf("step 12..\n");
       // Simplify the control flow graph (deleting unreachable blocks, etc).
       OurFPM.add(createCFGSimplificationPass());
-      printf("step 13..\n");
+      //printf("step 13..\n");
 
       OurFPM.doInitialization();
-      printf("step 14..\n");
+      //printf("step 14..\n");
 
       // Set the global so the code gen can use this.
       TheFPM = &OurFPM;
-      printf("step 15..\n");
+      //printf("step 15..\n");
 
       /* Create mappings for all of the Emacs Lisp builtins. */
       TheExecutionEngine->addGlobalMapping(
         Func("funcall", /* ReturnType= */ LispObject(),
              /* ParamTypes= */ PtrDiffT(), Pointer<LispObject>()),
         (void *) &Ffuncall);
-      printf("step 16..\n");
+      //printf("step 16..\n");
 
 #define MAP_TO_LLVM(name, nargs)                \
       TheExecutionEngine->addGlobalMapping(     \
         CreateFunction(#name, nargs),           \
         (void *) &F ## name);
 
-      printf("step 17..\n");
+      //printf("step 17..\n");
       MAP_TO_LLVM(setcar, 2);
-      printf("step 18..\n");
+      //printf("step 18..\n");
     }
 
-  printf("step 19..\n");
+  //printf("step 19..\n");
   TheFunction = CreateFunction(NULL, nargs, (void *) &bytestr);
-  printf("step 20..\n");
+  //printf("step 20..\n");
   TheFunction = CompileFunction(bytestr, constants, nargs, args);
-  printf("step 21..\n");
+  //printf("step 21..\n");
   TheFunction->dump();
 
-  printf("step 22..\n");
+  //printf("step 22..\n");
   return TheExecutionEngine->getPointerToFunction(TheFunction);
 }
 
