@@ -643,6 +643,7 @@ SPECIFIED_CFLAGS="$CFLAGS"
 dnl Sets GCC=yes if using gcc.
 AC_PROG_CC
 AM_PROG_CC_C_O
+AC_PROG_CXX
 
 # Initialize gnulib right after verifying that the C compiler works.
 gl_EARLY
@@ -3301,6 +3302,7 @@ AC_SUBST(LD_SWITCH_X_SITE)
 AC_SUBST(C_SWITCH_X_SITE)
 AC_SUBST(C_SWITCH_X_SYSTEM)
 AC_SUBST(CFLAGS)
+AC_SUBST(CXXFLAGS)
 ## Used in lwlib/Makefile.in.
 AC_SUBST(X_TOOLKIT_TYPE)
 if test -n "${machfile}"; then

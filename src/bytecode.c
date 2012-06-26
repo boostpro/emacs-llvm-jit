@@ -306,6 +306,7 @@ mark_byte_stack (void)
 }
 #endif
 
+#ifdef COMPILING_LLVM_CPP
 /* Unmark objects in the stacks on byte_stack_list.  Relocate program
    counters.  Called when GC has completed.  */
 
@@ -324,7 +325,7 @@ unmark_byte_stack (void)
 	}
     }
 }
-
+#endif /* COMPILING_LLVM_CPP */
 
 /* Fetch the next byte from the bytecode stream */
 
@@ -412,6 +413,8 @@ unmark_byte_stack (void)
   } while (0)
 
 
+#ifdef COMPILING_LLVM_CPP
+
 DEFUN ("byte-code", Fbyte_code, Sbyte_code, 3, 3, 0,
        doc: /* Function used internally in byte-compiled code.
 The first argument, BYTESTR, is a string of byte code;
@@ -461,6 +464,30 @@ exec_byte_code (Lisp_Object bytestr, Lisp_Object vector, Lisp_Object maxdepth,
      abort ();
  }
 #endif
+
+#ifdef LLVM_JIT
+  if (llvm_jit_compile && STRINGP (bytestr))
+    {
+      extern void *llvm_compile_byte_code (Lisp_Object bytestr,
+                                           Lisp_Object constants,
+                                           ptrdiff_t nargs, Lisp_Object *args);
+
+      void *fptr = llvm_compile_byte_code(bytestr, vector, nargs, args);
+      if (fptr)
+        XSETINT (bytestr, (long) fptr);
+    }
+
+  if (INTEGERP (bytestr))
+    {
+      typedef Lisp_Object (*Native_Function)(int /* argc */,
+                                             Lisp_Object * /* args */);
+      Native_Function func = (Native_Function) XINT (bytestr);
+      return func(nargs, args);
+    }
+
+  /* Otherwise, byte-compilation failed for some reason and we should
+     go ahead and execute the Emacs byte-code. */
+#endif /* LLVM_JIT */
 
   CHECK_STRING (bytestr);
   CHECK_VECTOR (vector);
@@ -941,6 +968,7 @@ exec_byte_code (Lisp_Object bytestr, Lisp_Object vector, Lisp_Object maxdepth,
 	  record_unwind_protect (set_buffer_if_live, Fcurrent_buffer ());
 	  break;
 
+#ifndef COMPILING_LLVM_CPP
 	case Bsave_window_excursion: /* Obsolete since 24.1.  */
 	  {
 	    register int count1 = SPECPDL_INDEX ();
@@ -952,6 +980,7 @@ exec_byte_code (Lisp_Object bytestr, Lisp_Object vector, Lisp_Object maxdepth,
 	    AFTER_POTENTIAL_GC ();
 	    break;
 	  }
+#endif /* COMPILING_LLVM_CPP */
 
 	case Bsave_restriction:
 	  record_unwind_protect (save_restriction_restore,
@@ -991,6 +1020,7 @@ exec_byte_code (Lisp_Object bytestr, Lisp_Object vector, Lisp_Object maxdepth,
 	  TOP = Vstandard_output;
 	  break;
 
+#ifndef COMPILING_LLVM_CPP
 	case Btemp_output_buffer_show: /* Obsolete since 24.1.  */
 	  {
 	    Lisp_Object v1;
@@ -1003,6 +1033,7 @@ exec_byte_code (Lisp_Object bytestr, Lisp_Object vector, Lisp_Object maxdepth,
 	    AFTER_POTENTIAL_GC ();
 	    break;
 	  }
+#endif /* COMPILING_LLVM_CPP */
 
 	case Bnth:
 	  {
@@ -1871,3 +1902,5 @@ integer, it is incremented each time that symbol's function is called.  */);
   }
 #endif
 }
+
+#endif /* COMPILING_LLVM_CPP */

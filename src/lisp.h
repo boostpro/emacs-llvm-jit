@@ -3408,6 +3408,11 @@ extern void mark_byte_stack (void);
 extern void unmark_byte_stack (void);
 extern Lisp_Object exec_byte_code (Lisp_Object, Lisp_Object, Lisp_Object,
 				   Lisp_Object, ptrdiff_t, Lisp_Object *);
+#define LLVM_JIT 1
+#ifdef LLVM_JIT
+extern Lisp_Object Qllvm_jit_compile;
+extern void syms_of_llvm (void);
+#endif /* LLVM_JIT */
 
 /* Defined in macros.c */
 extern Lisp_Object Qexecute_kbd_macro;

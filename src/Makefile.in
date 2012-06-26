@@ -31,7 +31,9 @@ srcdir = @srcdir@
 abs_builddir = @abs_builddir@
 VPATH = $(srcdir)
 CC = @CC@
+CXX = @CXX@
 CFLAGS = @CFLAGS@
+CXXFLAGS = $(shell llvm-config --cxxflags | sed 's/-O3//') -std=c++11 @CXXFLAGS@
 CPPFLAGS = @CPPFLAGS@
 LDFLAGS = @LDFLAGS@
 LD_FIRSTFLAG=@LD_FIRSTFLAG@
@@ -326,6 +328,9 @@ ALL_OBJC_CFLAGS=$(ALL_CFLAGS) $(GNU_OBJC_CFLAGS)
 .c.o:
 	@$(MKDEPDIR)
 	$(CC) -c $(CPPFLAGS) $(ALL_CFLAGS) $<
+.cpp.o:
+	@$(MKDEPDIR)
+	$(CXX) -c $(CPPFLAGS) $(CXXFLAGS) $(ALL_CFLAGS) $<
 .m.o:
 	@$(MKDEPDIR)
 	$(CC) -c $(CPPFLAGS) $(ALL_OBJC_CFLAGS) $<
@@ -347,7 +352,7 @@ base_obj = dispnew.o frame.o scroll.o xdisp.o menu.o $(XMENU_OBJ) window.o \
 	region-cache.o sound.o atimer.o \
 	doprnt.o intervals.o textprop.o composite.o xml.o \
 	$(MSDOS_OBJ) $(MSDOS_X_OBJ) $(MAC_OBJ) $(NS_OBJ) $(CYGWIN_OBJ) $(FONT_OBJ)
-obj = $(base_obj) $(MAC_OBJC_OBJ) $(NS_OBJC_OBJ)
+obj = $(base_obj) $(MAC_OBJC_OBJ) $(NS_OBJC_OBJ) llvm.o
 
 ## Object files used on some machine or other.
 ## These go in the DOC file on all machines in case they are needed.
@@ -395,7 +400,8 @@ LIBES = $(LIBS) $(LIBX_BASE) $(LIBX_OTHER) $(LIBSOUND) \
    $(LIBS_TERMCAP) $(GETLOADAVG_LIBS) $(SETTINGS_LIBS) $(LIBSELINUX_LIBS) \
    $(FREETYPE_LIBS) $(FONTCONFIG_LIBS) $(LIBOTF_LIBS) $(M17N_FLT_LIBS) \
    $(LIBGNUTLS_LIBS) $(LIB_PTHREAD) $(LIB_PTHREAD_SIGMASK) \
-   $(LIB_GCC) $(LIB_MATH) $(LIB_STANDARD) $(LIB_GCC)
+   $(LIB_GCC) $(LIB_MATH) $(LIB_STANDARD) $(LIB_GCC) \
+   $(shell llvm-config --ldflags) -std=c++11 -lLLVM-3.1
 
 all: emacs$(EXEEXT) $(OTHER_FILES)
 
@@ -443,7 +449,7 @@ buildobj.h: Makefile
 
 globals.h: gl-stamp; @true
 
-GLOBAL_SOURCES = $(base_obj:.o=.c) $(MAC_OBJC_OBJ:.o=.m) $(NS_OBJC_OBJ:.o=.m)
+GLOBAL_SOURCES = $(base_obj:.o=.c) llvm.cpp $(MAC_OBJC_OBJ:.o=.m) $(NS_OBJC_OBJ:.o=.m)
 
 gl-stamp: $(libsrc)/make-docfile$(EXEEXT) $(GLOBAL_SOURCES)
 	@rm -f gl-tmp
@@ -457,7 +463,7 @@ $(lib)/libgnu.a: $(config_h)
 	cd $(lib) && $(MAKE) libgnu.a
 
 temacs$(EXEEXT): $(START_FILES) stamp-oldxmenu $(obj) $(otherobj) $(lib)/libgnu.a
-	$(CC) $(LD_FIRSTFLAG) $(ALL_CFLAGS) $(TEMACS_LDFLAGS) $(TEMACS_LDFLAGS2) \
+	$(CXX) $(LD_FIRSTFLAG) $(ALL_CFLAGS) $(TEMACS_LDFLAGS) $(TEMACS_LDFLAGS2) \
 	  -o temacs $(START_FILES) $(obj) $(otherobj) $(lib)/libgnu.a $(LIBES)
 
 ## The following oldxmenu-related rules are only (possibly) used if
