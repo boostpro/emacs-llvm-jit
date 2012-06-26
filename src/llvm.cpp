@@ -88,6 +88,13 @@ namespace lc
     }
   };
 
+  struct Int32 {
+    typedef unsigned int value_type;
+    operator Type *() const {
+      return Type::getInt32Ty(*Context);
+    }
+  };
+
   struct LispObject {
     typedef Lisp_Object value_type;
     operator Type *() const {
@@ -117,6 +124,11 @@ namespace lc
   {
     Value *value;
     Node() : value(NULL) {}
+    /* jww (2012-06-26): width of unsigned int depends on the platform? */
+    Node(int t)
+      : value(ConstantInt::get(Type::getInt32Ty(*Context), t, true)) {}
+    Node(unsigned long t)
+      : value(ConstantInt::get(Type::getInt64Ty(*Context), t, true)) {}
     Node(Lisp_Object t) : value(ConstantInt::get(LispObject(), t, false)) {}
     Node(Value *v) : value(v) {}
 
@@ -139,8 +151,18 @@ namespace lc
     Node operator==(const Node& rhs) const {
       return Builder->CreateICmpEQ(*this, const_cast<Node&>(rhs));
     }
-    Node operator>>(uint64_t size) const {
-      return Builder->CreateLShr(value, size);
+    Node operator>>(const Node& rhs) const {
+      return Builder->CreateLShr(value, rhs);
+    }
+
+    Node operator&(const Node& rhs) const {
+      return Builder->CreateAnd(value, rhs);
+    }
+    Node operator|(const Node& rhs) const {
+      return Builder->CreateOr(value, rhs);
+    }
+    Node operator^(const Node& rhs) const {
+      return Builder->CreateXor(value, rhs);
     }
   };
 
@@ -158,6 +180,8 @@ namespace lc
       return Node((Value *)*this);
     }
   };
+
+  typedef Constant<UChar> C_UChar;
 
   template <typename ReturnType = LispObject>
   struct If
@@ -293,6 +317,148 @@ namespace lc
     vector<Node> nodes;
     return Call<ReturnType>(Name, nodes, args...);
   }
+
+  template <typename T = LispObject>
+  struct TempVar
+  {
+    Value * temp;
+
+    TempVar(Node expr) {
+      temp = Builder->CreateAlloca(T());
+      Builder->CreateStore(expr, temp);
+    }
+
+    Node End() {
+      return temp;
+    }
+  };
+
+  // These helper classes must match the behavior of the corresponding
+  // lisp.h macros exactly.
+
+  struct XType {
+    Node expr;
+    XType(Node x) : expr(x) {}
+    operator Node() const {
+#ifndef USE_LISP_UNION_TYPE
+#ifdef USE_LSB_TAG
+      assert(XTYPE (Qnil) == ((enum Lisp_Type) ((Qnil) & TYPEMASK)));
+      return expr & TYPEMASK;
+#else /* USE_LSB_TAG */
+      assert(
+        XTYPE (Qnil) == ((enum Lisp_Type) (((EMACS_UINT) (Qnil)) >> VALBITS)));
+      return expr >> VALBITS;
+#endif /* USE_LSB_TAG */
+#else /* USE_LISP_UNION_TYPE */
+      /* jww (2012-06-26): Use LLVM struct accessor */
+      assert(XTYPE (Qnil) == ((enum Lisp_Type) (Qnil).u.type));
+      return expr.u.type;
+#endif /* USE_LISP_UNION_TYPE */
+    }
+  };
+
+  struct XUInt {
+    Node expr;
+    XUInt(Node x) : expr(x) {}
+    operator Node() const {
+#ifndef USE_LISP_UNION_TYPE
+#ifdef USE_LSB_TAG
+#ifdef USE_2_TAGS_FOR_INTS
+      /* jww (2012-06-26): Some of these constants may not be as small
+         as C_UChar. */
+      return expr >> (GCTYPEBITS - 1);
+#else
+      return expr >> GCTYPEBITS;
+#endif
+#else /* USE_LSB_TAG */
+#ifdef USE_2_TAGS_FOR_INTS
+      return expr & (1 + (VALMASK << 1));
+#else
+      return expr & VALMASK;
+#endif
+#endif /* USE_LSB_TAG */
+#else /* USE_LISP_UNION_TYPE */
+      /* jww (2012-06-26): Use LLVM struct accessor */
+      return expr.u.val;
+#endif /* USE_LISP_UNION_TYPE */
+    }
+  };
+
+  struct XPntr {
+    Node expr;
+    XPntr(Node x) : expr(x) {}
+    operator Node() const {
+#ifndef USE_LISP_UNION_TYPE
+#ifdef USE_LSB_TAG
+      return expr & ~TYPEMASK;
+#else
+#ifdef DATA_SEG_BITS
+      return (expr & VALMASK) | C_UChar(DATA_SEG_BITS);
+#else
+      return expr & VALMASK;
+#endif
+#endif /* USE_LSB_TAG */
+#else /* USE_LISP_UNION_TYPE */
+#ifdef USE_LSB_TAG
+      /* jww (2012-06-26): Use LLVM struct accessor */
+      return expr.s.val << GCTYPEBITS;
+#else
+#ifdef DATA_SEG_BITS
+      return XUInt (expr) | DATA_SEG_BITS;
+#else
+      return XUInt (expr);
+#endif
+#endif /* USE_LSB_TAG */
+#endif /* USE_LISP_UNION_TYPE */
+    }
+  };
+
+  template <unsigned char T>
+  struct XUntag {
+    Node expr;
+    XUntag(Node x) : expr(x) {}
+    operator Node() const {
+#ifdef USE_LSB_TAG
+      return expr - T;
+#else
+      return XPntr (expr);
+#endif
+    }
+  };
+
+  template <unsigned char T>
+  struct AtomP {
+    Node expr;
+    AtomP(Node x) {
+#ifdef USE_LSB_TAG
+      expr = XType (XUntag<T> (x));
+      expr = expr == Node(0);
+#else
+      expr = XType (x) == T;
+#endif
+    }
+    operator Node() const {
+      return expr;
+    }
+  };
+
+  typedef AtomP<Lisp_Cons> ConsP;
+
+  struct XCar {
+    Node expr;
+    XCar(Node x) : expr(x) {}
+    operator Node() const {
+      return expr;
+    }
+  };
+
+  struct NilP {
+    Node expr;
+    NilP(Node x) : expr(x) {}
+    operator Node() const {
+      return expr;
+    }
+  };
 }
 
 using namespace lc;
@@ -325,6 +491,14 @@ using namespace lc;
 
 #undef TOP
 #define TOP (values.back())
+
+#undef BYTE_CODE_QUIT
+// jww (2012-06-26): Needs to be defined
+#define BYTE_CODE_QUIT
+
+#undef MAYBE_GC
+// jww (2012-06-26): Needs to be defined
+#define MAYBE_GC()
 
 Value *CompileByteCode (Lisp_Object bytestr, Lisp_Object constants,
                         ptrdiff_t nargs, Lisp_Object *args)
@@ -409,11 +583,13 @@ Value *CompileByteCode (Lisp_Object bytestr, Lisp_Object constants,
       if (NILP (v1))
       {
         BYTE_CODE_QUIT;
+        /* jww (2012-06-26): I'll need to create a pending label that
+           gets inserted when stream_pc = stream + op later during
+           processing of this function. */
         stream_pc = stream + op;
       }
       break;
     }
-#endif
 
     case Bcar:
       // {
@@ -432,22 +608,20 @@ Value *CompileByteCode (Lisp_Object bytestr, Lisp_Object constants,
       //   break;
       // }
     {
-      values.front() =
-        If<>((values.front() >> VALBITS) == Constant<UChar>(Lisp_Cons),
-             /* has_else= */ true)
-        .Then (/* jww (2012-06-25): XCAR (v1) */ Qnil)
+      TOP = TempVar<> (
+        If<> (ConsP (TOP), true)
+        .Then (XCar (TOP))
         .Else (
-          If<>(values.front() == Qnil, /* has_else= */ true)
+          If<> (NilP (TOP), true)
           .Then (Qnil)
           .Else (Call<LispObject>("wrong_type_argument", Qlistp,
                                   values.front()))
-          .End ()
-          )
+          .End ())
+        .End ())
         .End ();
       break;
     }
 
-#if 0
     case Beq:
     {
       Lisp_Object v1;
@@ -545,6 +719,7 @@ Value *CompileByteCode (Lisp_Object bytestr, Lisp_Object constants,
       /* Specbind can signal and thus GC.  */
       specbind (constantsp[op], POP);
       break;
+#endif
 
     case Bcall+6:
       op = FETCH;
@@ -553,7 +728,6 @@ Value *CompileByteCode (Lisp_Object bytestr, Lisp_Object constants,
     case Bcall+7:
       op = FETCH2;
       goto docall;
-#endif
 
     case Bcall:
     case Bcall+1:
@@ -570,9 +744,9 @@ Value *CompileByteCode (Lisp_Object bytestr, Lisp_Object constants,
 
         size_t len = values.size();
         Value * args = Builder->CreateAlloca(
-          LispObject(), Constant<UChar>(values.size()));
+          LispObject(), C_UChar(values.size()));
         for (int i = 0; i < len; ++i) {
-          Value * GEP = Builder->CreateGEP(args, Constant<UChar>(i));
+          Value * GEP = Builder->CreateGEP(args, C_UChar(i));
           Builder->CreateStore(values[i], GEP);
         }
 
