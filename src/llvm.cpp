@@ -318,6 +318,15 @@ namespace lc
     return Call<ReturnType>(Name, nodes, args...);
   }
 
+  Node Args(vector<Node>& values, unsigned int len)
+  {
+    Value * args = Builder->CreateAlloca(LispObject(), C_UChar(len));
+    assert(len < 255);
+    for (int i = 0; i < len; ++i)
+      Builder->CreateStore(values[i], Builder->CreateGEP(args, C_UChar(i)));
+    return args;
+  }
+
   template <typename T = LispObject>
   struct TempVar
   {
@@ -364,21 +373,24 @@ namespace lc
 #ifndef USE_LISP_UNION_TYPE
 #ifdef USE_LSB_TAG
 #ifdef USE_2_TAGS_FOR_INTS
-      /* jww (2012-06-26): Some of these constants may not be as small
-         as C_UChar. */
+      assert(XUINT(Qnil) == (((EMACS_UINT) (Qnil)) >> (GCTYPEBITS - 1)));
       return expr >> (GCTYPEBITS - 1);
 #else
+      assert(XUINT(Qnil) == (((EMACS_UINT) (Qnil)) >> GCTYPEBITS));
       return expr >> GCTYPEBITS;
 #endif
 #else /* USE_LSB_TAG */
 #ifdef USE_2_TAGS_FOR_INTS
+      assert(XUINT(Qnil) == ((EMACS_UINT) ((Qnil) & (1 + (VALMASK << 1)))));
       return expr & (1 + (VALMASK << 1));
 #else
+      assert(XUINT(Qnil) == ((EMACS_UINT) ((Qnil) & VALMASK)));
       return expr & VALMASK;
 #endif
 #endif /* USE_LSB_TAG */
 #else /* USE_LISP_UNION_TYPE */
       /* jww (2012-06-26): Use LLVM struct accessor */
+      assert(XUINT(Qnil) == ((EMACS_UINT) (Qnil).u.val));
       return expr.u.val;
 #endif /* USE_LISP_UNION_TYPE */
     }
@@ -479,12 +491,12 @@ using namespace lc;
 /* Pop a value off the execution stack.  */
 
 #undef POP
-#define POP values.pop_back()
+#define POP (tmp = values.back(), values.pop_back(), tmp)
 
 /* Discard n values from the execution stack.  */
 
 #undef DISCARD
-#define DISCARD(n) values.clear(values.end() - n, values.end())
+#define DISCARD(n) values.erase(values.end() - n, values.end())
 
 /* Get the value which is at the top of the execution stack, but don't
    pop it. */
@@ -508,7 +520,7 @@ Value *CompileByteCode (Lisp_Object bytestr, Lisp_Object constants,
   Lisp_Object *constantsp;
   struct byte_stack stack;
   Lisp_Object *top;
-  Node result;
+  Node result, tmp;
   unsigned char *stream = SDATA (bytestr);
   unsigned char *stream_pc = stream;
 
@@ -608,16 +620,15 @@ Value *CompileByteCode (Lisp_Object bytestr, Lisp_Object constants,
       //   break;
       // }
     {
-      TOP = TempVar<> (
-        If<> (ConsP (TOP), true)
-        .Then (XCar (TOP))
+      Node top = TempVar<> (TOP);
+      TOP = If<> (ConsP (top), true)
+        .Then (XCar (top))
         .Else (
-          If<> (NilP (TOP), true)
+          If<> (NilP (top), true)
           .Then (Qnil)
           .Else (Call<LispObject>("wrong_type_argument", Qlistp,
                                   values.front()))
           .End ())
-        .End ())
         .End ();
       break;
     }
@@ -689,17 +700,15 @@ Value *CompileByteCode (Lisp_Object bytestr, Lisp_Object constants,
       }
       (void) POP;
       break;
+#endif
 
     case Bdup:
-    {
-      Lisp_Object v1;
-      v1 = TOP;
-      PUSH (v1);
+      PUSH (TOP);
       break;
-    }
 
     /* ------------------ */
 
+#if 0
     case Bvarbind+6:
       op = FETCH;
       goto varbind;
@@ -737,23 +746,11 @@ Value *CompileByteCode (Lisp_Object bytestr, Lisp_Object constants,
     case Bcall+5:
       op -= Bcall;
     docall: {
-        // BEFORE_POTENTIAL_GC ();
-        // DISCARD (op);
-        // TOP = Ffuncall (op + 1, &TOP);
-        // AFTER_POTENTIAL_GC ();
-
-        size_t len = values.size();
-        Value * args = Builder->CreateAlloca(
-          LispObject(), C_UChar(values.size()));
-        for (int i = 0; i < len; ++i) {
-          Value * GEP = Builder->CreateGEP(args, C_UChar(i));
-          Builder->CreateStore(values[i], GEP);
-        }
-
-        result = Call<LispObject>("funcall", values.size(), args);
-
-        values.clear();
-        values.push_back(result);
+        BEFORE_POTENTIAL_GC ();
+        Node args = Args(values, op + 1);
+        DISCARD (op);
+        TOP = Call<LispObject>("funcall", op + 1, args);
+        AFTER_POTENTIAL_GC ();
         break;
       }
 
@@ -884,11 +881,9 @@ Value *CompileByteCode (Lisp_Object bytestr, Lisp_Object constants,
 #endif
 
     case Breturn:
-      //result = POP;
-      result = TOP;
+      result = POP;
       goto exit;
 
-#if 0
     case Bdiscard:
       DISCARD (1);
       break;
@@ -897,6 +892,7 @@ Value *CompileByteCode (Lisp_Object bytestr, Lisp_Object constants,
       PUSH (constantsp[FETCH2]);
       break;
 
+#if 0
     case Bsave_excursion:
       record_unwind_protect (save_excursion_restore,
                              save_excursion_save ());
@@ -1127,20 +1123,16 @@ Value *CompileByteCode (Lisp_Object bytestr, Lisp_Object constants,
       }
       break;
     }
+#endif
 
+#if 0
     case Badd1:
     {
-      Lisp_Object v1;
-      v1 = TOP;
-      if (INTEGERP (v1))
-      {
-        XSETINT (v1, XINT (v1) + 1);
-        TOP = v1;
-      }
-      else
-      {
-        TOP = Fadd1 (v1);
-      }
+      Node top = TempVar<> (TOP).End();
+      If<> (IntegerP (top), true)
+        .Then(top += 1)
+        .Else(Call<LispObject>("add1", top))
+        .End();
       break;
     }
 
@@ -1757,6 +1749,7 @@ llvm_compile_byte_code (Lisp_Object bytestr, Lisp_Object constants,
         (void *) &F ## name);
 
       //printf("step 17..\n");
+      MAP_TO_LLVM(add1, 1);
       MAP_TO_LLVM(setcar, 2);
       //printf("step 18..\n");
     }
